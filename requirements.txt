@@ -1,2 +1,4 @@
 torch
 dataclasses
+tiktoken
+transformers
