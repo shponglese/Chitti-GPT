@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import math
+import time
 
 
 class CausalSelfAttention(nn.Module):
@@ -15,7 +16,7 @@ class CausalSelfAttention(nn.Module):
 
         #output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
-
+        self.c_proj.NANOGPT_SCALE_INIT = 1
         #regularization
 
         self.n_head = config.n_head
@@ -57,6 +58,8 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, 4* config.n_embd)
         self.gelu = nn.GELU(approximate='tanh')
         self.c_proj = nn.Linear(4* config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
+
     def forward(self, x):
         x = self.c_fc(x)
         x = self.gelu(x)
@@ -109,7 +112,10 @@ class GPT(nn.Module):
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            std = 0.02
+            if hasattr(module, 'NANOGPT_SCALE_INIT'):
+                std *= (2 * self.config.n_layer) ** -0.5
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
@@ -242,7 +248,11 @@ elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     device = "mps"
 print(f"using device : {device}")
 
-train_loader = DataLoaderLite(B=4, T=32)
+torch.manual_seed(1337)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(1337)
+
+train_loader = DataLoaderLite(B=16, T=1024)
 
 #get the logits
 model = GPT(GPTConfig())
@@ -252,20 +262,25 @@ model.to(device)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
+    to = time.time()
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
     logits, loss = model(x,y)
     loss.backward()
     optimizer.step()
-    print(f"step {i}, loss: {loss.item()}")
+    torch.cuda.synchronize()
+    t1 = time.time()
+    dt = (t1-t0)*1000 
+    print(f"step {i}, loss: {loss.item()}, st: {dt:.2f}ms")
     
 
 
 # print(logits.shape)
 import sys; sys.exit(0)
 
-
+#To trigger a terminal while running the code:
+# import code; code.interact(local=locals())
 
 
 
