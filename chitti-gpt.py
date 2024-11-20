@@ -5,6 +5,11 @@ from torch.nn import functional as F
 import math
 import time
 
+#in colab
+input_path = '/content/input.txt'
+
+#in windows
+# input_path = '../../input.txt'
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
@@ -213,7 +218,7 @@ class DataLoaderLite:
         self.T = T
 
         #at init load token from disk and store them in memory
-        with open('../../input.txt', 'r') as f:
+        with open(input_path, 'r') as f:
             text = f.read()
         enc = tiktoken.get_encoding('gpt2')
         tokens = enc.encode(text)
@@ -252,7 +257,7 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
-train_loader = DataLoaderLite(B=16, T=1024)
+train_loader = DataLoaderLite(B=6, T=1024)
 
 #get the logits
 model = GPT(GPTConfig())
@@ -262,7 +267,7 @@ model.to(device)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
-    to = time.time()
+    t0 = time.time()
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
     optimizer.zero_grad()

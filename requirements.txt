@@ -2,3 +2,4 @@ torch
 dataclasses
 tiktoken
 transformers
+python-dotenv
