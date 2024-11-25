@@ -248,25 +248,51 @@ class GPT(nn.Module):
 
 #-----------------------------------------------
 import tiktoken
+import numpy as np
+
+def load_tokens(filename):
+    npt = np.load(filename)
+    ptt = torch.tensor(npt, dtype=torch.long)
+    return ptt
 
 class DataLoaderLite:
-    def __init__(self, B, T, process_rank, num_processes):
+    def __init__(self, B, T, process_rank, num_processes, split):
         self.B = B
         self.T = T
         self.process_rank = process_rank
         self.num_processes = num_processes
+        assert split in {'train','val'}
 
-        #at init load token from disk and store them in memory
-        with open(input_path, 'r') as f:
-            text = f.read()
-        enc = tiktoken.get_encoding('gpt2')
-        tokens = enc.encode(text)
-        self.tokens = torch.tensor(tokens)
-        print(f"Loaded {len(self.tokens)} tokens")
-        print(f"1 epoch = {len(self.tokens)//(B*T)} batches")
+        #get the shard filenames
+        data_root = "huggingdata_gptprompts" #$@! changes
+        shards = os.listdir(data_root)
+        shards = [s for s in shards if split in s]
+        shards = sorted(shards)
+        shards = [os.path.join(data_root,s) for s in shards]
 
-        #state
+        self.shards = shards
+        assert len(shards)>0, f"no shards found  for split {split}"
+        if master_process:
+            print(f"found {len(shards)} shards for split {split}")
+
+        #state, init at shard zero
+        self.current_shard = 0
+        self.tokens = load_tokens(self.shards[self.current_shard])
         self.current_position = self.B * self.T * self.process_rank
+
+
+        #if we are doing a text file use below code, if doing shards, use above code
+        # #at init load token from disk and store them in memory
+        # with open(input_path, 'r') as f:
+        #     text = f.read()
+        # enc = tiktoken.get_encoding('gpt2')
+        # tokens = enc.encode(text)
+        # self.tokens = torch.tensor(tokens)
+        # print(f"Loaded {len(self.tokens)} tokens")
+        # print(f"1 epoch = {len(self.tokens)//(B*T)} batches")
+
+        # #state
+        # self.current_position = self.B * self.T * self.process_rank
     
     def next_batch(self):
         B,T = self.B, self.T
@@ -276,11 +302,18 @@ class DataLoaderLite:
 
         #advance the position in the tensor
         self.current_position += B* T *self.num_processes
-
-        #if loading the next batch would be out of bounds, reset
+        
         if self.current_position + (B * T *self.num_processes+ 1) > len(self.tokens):
-            self.current_position = self.B * self.T * self.process_rank
+            self.current_shard = (self.current_shard + 1) % len(self.shards)
+            self.tokens = load_tokens(self.shards[self.current_shard])
+            self.current_position = B * T * self.process_rank
         return x,y
+
+        #if we are doing a text file use below code, if doing shards, use above code
+        # #if loading the next batch would be out of bounds, reset
+        # if self.current_position + (B * T *self.num_processes+ 1) > len(self.tokens):
+        #     self.current_position = self.B * self.T * self.process_rank
+        # return x,y
 
 
 #------------------------------------------------
@@ -364,7 +397,9 @@ if master_process:
 # import sys; sys.exit(0)
 #
 
-train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size)
+# train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size) 
+train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train") #$@! changes
+
 
 torch.set_float32_matmul_precision('high')
 
@@ -380,8 +415,8 @@ raw_model = model.module if ddp else model #always contains the raw unwrapped mo
 
 max_lr = 6e-4
 min_lr = max_lr * 0.1
-warmup_steps = 10
-max_steps = 50
+warmup_steps = 10 #715 for GPT2  (375 Million / 2**19 = 715), can be made aggressive with 100
+max_steps = 50 #19073 steps for GPT2 (10Billion / 2**19 = 19073)
 
 def get_lr(it):
     # 1) Linear warmup for warmup_iters steps
@@ -443,7 +478,7 @@ for step in range(max_steps):
         print(f"step {step:4d} | loss: {loss_accum.item():.6f} | lr {lr:.4e} | norm: {norm: .4f} | dt: {dt:.2f}ms | tokens/sec: {tokens_per_sec:.2f}")
 
 if ddp:
-    destrou_process_group()
+    destroy_process_group()
 
 # print(logits.shape)
 import sys; sys.exit(0)
